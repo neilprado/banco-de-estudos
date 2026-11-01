@@ -1,0 +1,102 @@
+
+name: CI - Python Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    name: Executar testes Python
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar mensagens dos commits
+        id: filtro
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "run_ci=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            commits=$(git rev-list "$AFTER")
+          else
+            commits=$(git rev-list "$BEFORE..$AFTER")
+          fi
+
+          run_ci=false
+
+          for commit in $commits; do
+            subject=$(git log -1 --format=%s "$commit")
+
+            if [[ "$subject" != "[subject]"* ]]; then
+              run_ci=true
+              break
+            fi
+          done
+
+          echo "run_ci=$run_ci" >> "$GITHUB_OUTPUT"
+
+          if [ "$run_ci" = "false" ]; then
+            echo "CI ignorada: todos os commits começam com [subject]."
+          else
+            echo "CI habilitada: existe pelo menos um commit que não começa com [subject]."
+          fi
+
+      - name: Configurar Python
+        if: steps.filtro.outputs.run_ci == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        if: steps.filtro.outputs.run_ci == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Executar testes
+        id: testes
+        if: steps.filtro.outputs.run_ci == 'true'
+        run: |
+          python -m pytest -v --junitxml=test-results.xml
+
+      - name: Resumo da execução
+        if: always()
+        env:
+          RUN_CI: ${{ steps.filtro.outputs.run_ci }}
+          TEST_RESULT: ${{ steps.testes.outcome }}
+        run: |
+          if [ "$RUN_CI" = "false" ]; then
+            echo "## ⏭️ CI ignorada" >> "$GITHUB_STEP_SUMMARY"
+            echo "Todos os commits começam com [subject]." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$TEST_RESULT" = "success" ]; then
+            echo "## ✅ Testes aprovados" >> "$GITHUB_STEP_SUMMARY"
+            echo "Todos os testes passaram." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ❌ Falha nos testes" >> "$GITHUB_STEP_SUMMARY"
+            echo "Consulte os logs da etapa Executar testes." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Salvar relatório dos testes
+        if: always() && steps.filtro.outputs.run_ci == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-testes
+          path: test-results.xml
+          if-no-files-found: ignore
